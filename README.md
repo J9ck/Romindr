@@ -2,7 +2,6 @@
 
 Romindr is a cute, local-only iOS app that helps you remember all the dates that matter 💌. Track anniversaries, birthdays, Valentine’s Day, and other special partner holidays—all offline, all on your device. Never miss a moment!  
 
-![Romindr Screenshot](images/screenshot.png)
 
 ---
 
@@ -13,7 +12,6 @@ Romindr is a cute, local-only iOS app that helps you remember all the dates that
 - 📅 Automatic sorting by upcoming events  
 - 📴 100% offline – all data stays on your phone  
 
-![Confetti GIF](images/confetti.gif)
 
 ---
 
