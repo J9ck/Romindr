@@ -119,7 +119,11 @@ struct ContentView: View {
     }
 
     func scheduleNotification(for option: ReminderOption) {
-        guard option.isEnabled else { return }
+        guard option.isEnabled else {
+            // Remove notification if disabled
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [option.id.uuidString])
+            return
+        }
 
         let content = UNMutableNotificationContent()
         content.title = "Romindr 💗"
@@ -132,7 +136,11 @@ struct ContentView: View {
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         let request = UNNotificationRequest(identifier: option.id.uuidString, content: content, trigger: trigger)
 
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Error scheduling notification: \(error.localizedDescription)")
+            }
+        }
     }
 
     var sortedReminderOptions: [ReminderOption] {
@@ -329,7 +337,16 @@ struct ContentView: View {
         .navigationViewStyle(.stack)
         .onAppear {
             loadReminders()
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                if let error = error {
+                    print("Error requesting notification authorization: \(error.localizedDescription)")
+                }
+                if granted {
+                    print("Notification authorization granted")
+                } else {
+                    print("Notification authorization denied")
+                }
+            }
         }
     }
 }
