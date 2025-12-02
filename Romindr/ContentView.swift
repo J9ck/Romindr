@@ -73,20 +73,24 @@ struct ConfettiView: UIViewRepresentable {
 }
 
 struct ContentView: View {
-    @State private var reminderOptions: [ReminderOption] = [
+    @State private var reminderOptions: [ReminderOption] = []
+    
+    // Default templates that can be used
+    private let defaultTemplates: [ReminderOption] = [
         ReminderOption(title: "Valentine's Day", icon: "heart.fill", isCustomDate: false,
-                       defaultDate: Calendar.current.date(from: DateComponents(year: 2026, month: 2, day: 14))),
+                       defaultDate: Calendar.current.date(from: DateComponents(month: 2, day: 14))),
         ReminderOption(title: "Our Anniversary", icon: "heart.circle.fill", isCustomDate: true),
         ReminderOption(title: "Their Birthday", icon: "gift.fill", isCustomDate: true),
         ReminderOption(title: "National Boyfriend Day", icon: "heart.fill", isCustomDate: false,
-                       defaultDate: Calendar.current.date(from: DateComponents(year: 2025, month: 10, day: 3))),
+                       defaultDate: Calendar.current.date(from: DateComponents(month: 10, day: 3))),
         ReminderOption(title: "National Girlfriend Day", icon: "heart.fill", isCustomDate: false,
-                       defaultDate: Calendar.current.date(from: DateComponents(year: 2025, month: 8, day: 1))),
+                       defaultDate: Calendar.current.date(from: DateComponents(month: 8, day: 1))),
         ReminderOption(title: "National Couples Day", icon: "heart.circle", isCustomDate: false,
-                       defaultDate: Calendar.current.date(from: DateComponents(year: 2025, month: 8, day: 18)))
+                       defaultDate: Calendar.current.date(from: DateComponents(month: 8, day: 18)))
     ]
 
     @AppStorage("reminderOptionsData") private var storedReminderData: Data = Data()
+    @AppStorage("hasLoadedDefaults") private var hasLoadedDefaults: Bool = false
 
     @State private var bounce = false
     @State private var hasUserInteracted = false
@@ -95,27 +99,99 @@ struct ContentView: View {
     @State private var titleOpacity: Double = 0.0
     @State private var titleScale: CGFloat = 0.5
 
-    @State private var toggleBounceIndices: Set<Int> = []
-    @State private var flashCardIndices: Set<Int> = []
-    @State private var showConfettiIndices: Set<Int> = []
+    @State private var toggleBounceIndices: Set<UUID> = []
+    @State private var flashCardIndices: Set<UUID> = []
+    @State private var showConfettiIndices: Set<UUID> = []
+    
+    @State private var showingAddReminder = false
+    @State private var newReminderTitle = ""
+    @State private var newReminderDate = Date()
+    @State private var showingNotificationAlert = false
 
     func playChime() {
-        if let url = Bundle.main.url(forResource: "chime", withExtension: "wav") {
-            audioPlayer = try? AVAudioPlayer(contentsOf: url)
+        guard let url = Bundle.main.url(forResource: "chime", withExtension: "wav") else {
+            print("Error: chime.wav not found in bundle")
+            return
+        }
+        do {
+            audioPlayer = try AVAudioPlayer(contentsOf: url)
             audioPlayer?.play()
+        } catch {
+            print("Error playing chime: \(error.localizedDescription)")
         }
     }
 
     func saveReminders() {
-        if let data = try? JSONEncoder().encode(reminderOptions) {
+        do {
+            let data = try JSONEncoder().encode(reminderOptions)
             storedReminderData = data
+        } catch {
+            print("Error saving reminders: \(error.localizedDescription)")
         }
     }
 
     func loadReminders() {
-        if let loaded = try? JSONDecoder().decode([ReminderOption].self, from: storedReminderData) {
-            reminderOptions = loaded
+        // Load saved reminders first
+        if !storedReminderData.isEmpty {
+            do {
+                reminderOptions = try JSONDecoder().decode([ReminderOption].self, from: storedReminderData)
+            } catch {
+                print("Error loading reminders: \(error.localizedDescription)")
+            }
         }
+        
+        // Load defaults only on first launch
+        if !hasLoadedDefaults && reminderOptions.isEmpty {
+            reminderOptions = defaultTemplates
+            hasLoadedDefaults = true
+            saveReminders()
+        }
+    }
+    
+    func deleteReminder(at offsets: IndexSet) {
+        // Get the IDs of reminders to delete
+        let idsToDelete = offsets.map { sortedReminderOptions[$0].id }
+        
+        // Remove notifications
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: idsToDelete.map { $0.uuidString })
+        
+        // Remove from main array
+        reminderOptions.removeAll { reminder in
+            idsToDelete.contains(reminder.id)
+        }
+        
+        saveReminders()
+    }
+    
+    func addReminder() {
+        guard !newReminderTitle.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        
+        let newReminder = ReminderOption(
+            title: newReminderTitle,
+            icon: "calendar.badge.clock",
+            isCustomDate: true,
+            userDate: newReminderDate,
+            isEnabled: true
+        )
+        
+        reminderOptions.append(newReminder)
+        saveReminders()
+        scheduleNotification(for: newReminder)
+        
+        newReminderTitle = ""
+        newReminderDate = Date()
+        showingAddReminder = false
+    }
+    
+    func daysUntil(date: Date) -> Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let targetDate = calendar.startOfDay(for: date)
+        
+        if let days = calendar.dateComponents([.day], from: today, to: targetDate).day {
+            return days
+        }
+        return 0
     }
 
     func scheduleNotification(for option: ReminderOption) {
@@ -132,6 +208,12 @@ struct ContentView: View {
 
         let triggerDate = option.isCustomDate ? option.userDate : option.defaultDate ?? Date()
         let comps = Calendar.current.dateComponents([.month, .day], from: triggerDate)
+        
+        // Validate date components
+        guard comps.month != nil && comps.day != nil else {
+            print("Error: Invalid date components for notification")
+            return
+        }
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         let request = UNNotificationRequest(identifier: option.id.uuidString, content: content, trigger: trigger)
@@ -145,35 +227,46 @@ struct ContentView: View {
 
     var sortedReminderOptions: [ReminderOption] {
         let today = Calendar.current.startOfDay(for: Date())
+        let currentYear = Calendar.current.component(.year, from: today)
+        
         return reminderOptions
-            .map { option in
+            .map { option -> ReminderOption in
                 var newOption = option
                 let base = option.isCustomDate ? option.userDate : option.defaultDate ?? Date()
-                let md = Calendar.current.dateComponents([.month, .day], from: base)
-
-                var next = DateComponents()
-                next.year = Calendar.current.component(.year, from: today)
-                next.month = md.month
-                next.day = md.day
-
-                let adjusted = Calendar.current.date(from: next) ?? base
-
+                
+                guard let md = Calendar.current.dateComponents([.month, .day], from: base).month,
+                      let day = Calendar.current.dateComponents([.month, .day], from: base).day else {
+                    return option // Return original if date components are invalid
+                }
+                
+                var nextDate = DateComponents()
+                nextDate.year = currentYear
+                nextDate.month = md
+                nextDate.day = day
+                
+                guard var adjusted = Calendar.current.date(from: nextDate) else {
+                    return option // Return original if date creation fails
+                }
+                
+                // If the date has passed this year, use next year
                 if adjusted < today {
-                    next.year! += 1
-                    let nextYear = Calendar.current.date(from: next) ?? adjusted
-                    newOption.defaultDate = nextYear
-                    newOption.userDate = nextYear
-                } else {
+                    nextDate.year = currentYear + 1
+                    adjusted = Calendar.current.date(from: nextDate) ?? adjusted
+                }
+                
+                // Update the display date without mutating the original stored date
+                if !option.isCustomDate {
                     newOption.defaultDate = adjusted
+                } else {
                     newOption.userDate = adjusted
                 }
-
+                
                 return newOption
             }
-            .sorted {
-                let d1 = $0.isCustomDate ? $0.userDate : $0.defaultDate!
-                let d2 = $1.isCustomDate ? $1.userDate : $1.defaultDate!
-                return d1 < d2
+            .sorted { option1, option2 in
+                let date1 = option1.isCustomDate ? option1.userDate : (option1.defaultDate ?? Date())
+                let date2 = option2.isCustomDate ? option2.userDate : (option2.defaultDate ?? Date())
+                return date1 < date2
             }
     }
 
@@ -215,30 +308,36 @@ struct ContentView: View {
 
                     ScrollView {
                         VStack(spacing: 16) {
-                            ForEach(sortedReminderOptions.indices, id: \.self) { i in
-                                let option = sortedReminderOptions[i]
-
+                            ForEach(sortedReminderOptions) { option in
                                 HStack {
                                     Spacer()
                                     ZStack {
                                         VStack(alignment: .leading, spacing: 6) {
-                                            HStack {
+                                            HStack(alignment: .top) {
                                                 Image(systemName: option.icon)
                                                     .foregroundColor(Color(red: 0.85, green: 0.1, blue: 0.3))
                                                     .scaleEffect(option.isEnabled && bounce ? 1.3 : 1.0)
                                                     .animation(.spring(response: 0.3, dampingFraction: 0.4), value: option.isEnabled && bounce)
 
-                                                VStack(alignment: .leading) {
+                                                VStack(alignment: .leading, spacing: 2) {
                                                     Text(option.title)
                                                         .font(.title3)
                                                         .fontWeight(.semibold)
                                                         .foregroundColor(Color(red: 0.85, green: 0.1, blue: 0.3))
 
-                                                    Text(option.isCustomDate ?
-                                                         option.userDate.formatted(date: .long, time: .omitted) :
-                                                         option.defaultDate?.formatted(date: .long, time: .omitted) ?? "")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
+                                                    let displayDate = option.isCustomDate ? option.userDate : (option.defaultDate ?? Date())
+                                                    Text(displayDate.formatted(date: .long, time: .omitted))
+                                                        .font(.caption)
+                                                        .foregroundColor(.secondary)
+                                                    
+                                                    // Days until countdown
+                                                    let days = daysUntil(date: displayDate)
+                                                    if days >= 0 {
+                                                        Text(days == 0 ? "Today! 🎉" : days == 1 ? "Tomorrow" : "In \(days) days")
+                                                            .font(.caption2)
+                                                            .fontWeight(.medium)
+                                                            .foregroundColor(days <= 7 ? Color(red: 0.85, green: 0.1, blue: 0.3) : .secondary)
+                                                    }
                                                 }
 
                                                 Spacer()
@@ -255,20 +354,20 @@ struct ContentView: View {
                                                             saveReminders()
                                                             scheduleNotification(for: reminderOptions[orig])
 
-                                                            toggleBounceIndices.insert(orig)
+                                                            toggleBounceIndices.insert(option.id)
                                                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                                toggleBounceIndices.remove(orig)
+                                                                toggleBounceIndices.remove(option.id)
                                                             }
 
-                                                            flashCardIndices.insert(orig)
+                                                            flashCardIndices.insert(option.id)
                                                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                                flashCardIndices.remove(orig)
+                                                                flashCardIndices.remove(option.id)
                                                             }
 
                                                             if newValue {
-                                                                showConfettiIndices.insert(orig)
+                                                                showConfettiIndices.insert(option.id)
                                                                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                                                    showConfettiIndices.remove(orig)
+                                                                    showConfettiIndices.remove(option.id)
                                                                 }
                                                             }
 
@@ -279,7 +378,8 @@ struct ContentView: View {
                                                 }
                                             }
 
-                                            if option.isEnabled, option.isCustomDate {
+                                            // Show date picker for custom dates (always visible when custom)
+                                            if option.isCustomDate {
                                                 if let orig = reminderOptions.firstIndex(where: { $0.id == option.id }) {
                                                     DatePicker("Select date for \(option.title)",
                                                                selection: $reminderOptions[orig].userDate,
@@ -288,32 +388,25 @@ struct ContentView: View {
                                                         .accentColor(Color(red: 0.85, green: 0.1, blue: 0.3))
                                                         .onChange(of: reminderOptions[orig].userDate) { _ in
                                                             saveReminders()
-                                                            scheduleNotification(for: reminderOptions[orig])
+                                                            if reminderOptions[orig].isEnabled {
+                                                                scheduleNotification(for: reminderOptions[orig])
+                                                            }
                                                         }
                                                 }
                                             }
                                         }
                                         .padding()
                                         .background(
-                                            flashCardIndices.contains(
-                                                reminderOptions.firstIndex(where: { $0.id == option.id }) ?? -1
-                                            ) ? Color(red: 1.0, green: 0.9, blue: 0.95)
+                                            flashCardIndices.contains(option.id) ? Color(red: 1.0, green: 0.9, blue: 0.95)
                                             : Color.white
                                         )
                                         .cornerRadius(12)
                                         .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
-                                        .scaleEffect(
-                                            toggleBounceIndices.contains(
-                                                reminderOptions.firstIndex(where: { $0.id == option.id }) ?? -1
-                                            ) ? 1.05 : 1.0
-                                        )
+                                        .scaleEffect(toggleBounceIndices.contains(option.id) ? 1.05 : 1.0)
                                         .animation(.spring(response: 0.3, dampingFraction: 0.6),
-                                                   value: toggleBounceIndices.contains(
-                                                       reminderOptions.firstIndex(where: { $0.id == option.id }) ?? -1
-                                                   ))
+                                                   value: toggleBounceIndices.contains(option.id))
 
-                                        if let orig = reminderOptions.firstIndex(where: { $0.id == option.id }),
-                                           showConfettiIndices.contains(orig) {
+                                        if showConfettiIndices.contains(option.id) {
                                             ConfettiView()
                                                 .frame(maxWidth: 360, maxHeight: 200)
                                                 .allowsHitTesting(false)
@@ -322,6 +415,7 @@ struct ContentView: View {
                                     Spacer()
                                 }
                             }
+                            .onDelete(perform: deleteReminder)
                         }
                         .padding(.horizontal)
                         .padding(.vertical, 16)
@@ -332,6 +426,40 @@ struct ContentView: View {
                             .padding(.bottom, 10)
                     }
                 }
+            }
+            .navigationBarItems(trailing: Button(action: {
+                showingAddReminder = true
+            }) {
+                Image(systemName: "plus.circle.fill")
+                    .foregroundColor(Color(red: 0.85, green: 0.1, blue: 0.3))
+                    .font(.title2)
+            })
+            .sheet(isPresented: $showingAddReminder) {
+                NavigationView {
+                    Form {
+                        Section(header: Text("New Reminder")) {
+                            TextField("Reminder Name", text: $newReminderTitle)
+                            DatePicker("Date", selection: $newReminderDate, displayedComponents: [.date])
+                        }
+                    }
+                    .navigationTitle("Add Reminder")
+                    .navigationBarItems(
+                        leading: Button("Cancel") {
+                            showingAddReminder = false
+                            newReminderTitle = ""
+                            newReminderDate = Date()
+                        },
+                        trailing: Button("Add") {
+                            addReminder()
+                        }
+                        .disabled(newReminderTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                    )
+                }
+            }
+            .alert("Notification Permission", isPresented: $showingNotificationAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Please enable notifications in Settings to receive reminders for your special dates.")
             }
         }
         .navigationViewStyle(.stack)
@@ -345,6 +473,9 @@ struct ContentView: View {
                     print("Notification authorization granted")
                 } else {
                     print("Notification authorization denied")
+                    DispatchQueue.main.async {
+                        showingNotificationAlert = true
+                    }
                 }
             }
         }
