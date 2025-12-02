@@ -234,14 +234,15 @@ struct ContentView: View {
                 var newOption = option
                 let base = option.isCustomDate ? option.userDate : option.defaultDate ?? Date()
                 
-                guard let md = Calendar.current.dateComponents([.month, .day], from: base).month,
-                      let day = Calendar.current.dateComponents([.month, .day], from: base).day else {
+                // Extract date components once
+                let components = Calendar.current.dateComponents([.month, .day], from: base)
+                guard let month = components.month, let day = components.day else {
                     return option // Return original if date components are invalid
                 }
                 
                 var nextDate = DateComponents()
                 nextDate.year = currentYear
-                nextDate.month = md
+                nextDate.month = month
                 nextDate.day = day
                 
                 guard var adjusted = Calendar.current.date(from: nextDate) else {
@@ -254,18 +255,37 @@ struct ContentView: View {
                     adjusted = Calendar.current.date(from: nextDate) ?? adjusted
                 }
                 
-                // Update the display date without mutating the original stored date
+                // Update only the display date for non-custom dates
+                // For custom dates, keep the original but use adjusted for sorting
                 if !option.isCustomDate {
                     newOption.defaultDate = adjusted
-                } else {
-                    newOption.userDate = adjusted
                 }
+                // Don't mutate userDate - keep original date the user selected
                 
                 return newOption
             }
             .sorted { option1, option2 in
-                let date1 = option1.isCustomDate ? option1.userDate : (option1.defaultDate ?? Date())
-                let date2 = option2.isCustomDate ? option2.userDate : (option2.defaultDate ?? Date())
+                let base1 = option1.isCustomDate ? option1.userDate : (option1.defaultDate ?? Date())
+                let base2 = option2.isCustomDate ? option2.userDate : (option2.defaultDate ?? Date())
+                
+                // Calculate next occurrence for sorting
+                let components1 = Calendar.current.dateComponents([.month, .day], from: base1)
+                let components2 = Calendar.current.dateComponents([.month, .day], from: base2)
+                
+                var next1 = DateComponents(year: currentYear, month: components1.month, day: components1.day)
+                var date1 = Calendar.current.date(from: next1) ?? base1
+                if date1 < today {
+                    next1.year = currentYear + 1
+                    date1 = Calendar.current.date(from: next1) ?? date1
+                }
+                
+                var next2 = DateComponents(year: currentYear, month: components2.month, day: components2.day)
+                var date2 = Calendar.current.date(from: next2) ?? base2
+                if date2 < today {
+                    next2.year = currentYear + 1
+                    date2 = Calendar.current.date(from: next2) ?? date2
+                }
+                
                 return date1 < date2
             }
     }
